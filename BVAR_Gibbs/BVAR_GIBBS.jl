@@ -69,8 +69,8 @@ prior = 2   # prior = 1 --> Indepependent Normal-Whishart Prior
             # prior = 2 --> Indepependent Minnesota-Whishart Prior
 
 # Gibbs-related preliminaries
-nsave = 100          # Final number of draws to save
-nburn = 10           # Draws to discard (burn-in)
+nsave = 10000          # Final number of draws to save
+nburn = 2000           # Draws to discard (burn-in)
 ntot = nsave + nburn  # Total number of draws
 it_print = 2000       # Print on the screen every "it_print"-th iteration
 
@@ -155,7 +155,7 @@ end
 # Create matrices to store forecasts
 if impulses == 1
     # Impulse response horizon
-    imp = zeros(nsave,M,ihor)
+    imp = zeros(nsave, M, ihor)
     bigj = zeros(M, M*p)
     bigj[1:M, 1:M] = eye(M)
 end
@@ -248,6 +248,7 @@ elseif prior == 2 # Minnesota-Wishart
                 if j in ind[i, :]
                     V_i[j, i] = a_bar_1/(p^2) # variance on own lags
                 else
+                    ll = 0 # need to initialize here because 'for' loop in Julia introduces new scope
                     for kj=1:M
                         if j in ind[kj, :]
                             ll = kj
@@ -286,7 +287,7 @@ for irep = 1:ntot  # Start the Gibbs "loop"
     v_post = T + v_prior
     S_post = S_prior + (Y - X*ALPHA)'*(Y - X*ALPHA)
 #    S_post = Symmetric(S_prior + (Y - X*ALPHA)'*(Y - X*ALPHA)) # may need this instead
-    SIGMA = inv(wish(inv(S_post),v_post)) # Draw SIGMA
+    SIGMA = inv(wish(inv(S_post), v_post)) # Draw SIGMA
 
     # Store results
     if irep > nburn
@@ -350,47 +351,47 @@ for irep = 1:ntot  # Start the Gibbs "loop"
 #         end # end forecasting
 #         #=========Forecasting ends here
 #
-#         #=========IMPULSE RESPONSES:
-#         if impulses==1
-#             biga = zeros(M*p,M*p)
-#             for j = 1:p-1
-#                 biga(j*M+1:M*(j+1),M*(j-1)+1:j*M) = eye(M)
-#             end
-#
-#             atemp = ALPHA(2:end,:)
-#             atemp = atemp(:)
-#             splace = 0
-#             for ii = 1:p
-#                 for iii = 1:M
-#                     biga(iii,(ii-1)*M+1:ii*M) = atemp(splace+1:splace+M,1)'
-#                     splace = splace + M
-#                 end
-#             end
-#
-#             # St dev matrix for structural VAR
-#             STCO = chol(SIGMA)
-#
-#             # Now get impulse responses for 1 through nhor future periods
-#             impresp = zeros(M,M*ihor)
-#             impresp(1:M,1:M) = STCO
-#             bigai = biga
-#             for j = 1:ihor-1
-#                 impresp(:,j*M+1:(j+1)*M) = bigj*bigai*bigj'*STCO
-#                 bigai = bigai*biga
-#             end
-#
-#             # Get the responses of all M variables to a shock imposed on
-#             # the 'equatN'- th equation:
-#             equatN = M #this assumes that the interest rate is sorted last in Y
-#             impf_m = zeros(M,ihor)
-#             jj=0
-#             for ij = 1:ihor
-#                 jj = jj + equatN
-#                 impf_m(:,ij) = impresp(:,jj)
-#             end
-#             imp(irep-nburn,:,:) = impf_m
-#
-#         end
+        #---------IMPULSE RESPONSES:
+        if impulses==1
+            biga = zeros(M*p, M*p)
+            for j = 1:p-1
+                biga[j*M+1:M*(j+1), M*(j-1)+1:j*M] = eye(M)
+            end
+
+            atemp = ALPHA[2:end, :]
+            atemp = atemp[:]
+            splace = 0
+            for ii = 1:p
+                for iii = 1:M
+                    biga[iii, (ii-1)*M+1:ii*M] = atemp[splace+1:splace+M, 1]'
+                    splace = splace + M
+                end
+            end
+
+            # St dev matrix for structural VAR
+            STCO = chol(Hermitian(SIGMA))
+
+            # Now get impulse responses for 1 through nhor future periods
+            impresp = zeros(M, M*ihor)
+            impresp[1:M, 1:M] = STCO
+            bigai = biga
+            for j = 1:ihor-1
+                impresp[:, j*M+1:(j+1)*M] = bigj*bigai*bigj'*STCO
+                bigai = bigai*biga
+            end
+
+            # Get the responses of all M variables to a shock imposed on
+            # the 'equatN'- th equation:
+            equatN = M #this assumes that the interest rate is sorted last in Y
+            impf_m = zeros(M, ihor)
+            jj=0
+            for ij = 1:ihor
+                jj = jj + equatN
+                impf_m[:, ij] = impresp[:, jj]
+            end
+            imp[irep-nburn, :, :] = impf_m
+
+        end # impulse responses
 #
         #----- Save draws of the parameters
         alpha_draws[irep-nburn, :] = alpha
@@ -402,10 +403,10 @@ for irep = 1:ntot  # Start the Gibbs "loop"
 end # end the main Gibbs for loop
 #------------------- End Sampling Posteriors -----------------------------
 
-# #Posterior mean of parameters:
-# ALPHA_mean = squeeze(mean(ALPHA_draws,1)) #posterior mean of ALPHA
-# SIGMA_mean = squeeze(mean(SIGMA_draws,1)) #posterior mean of SIGMA
-#
+#Posterior mean of parameters:
+ALPHA_mean = squeeze(mean(ALPHA_draws, 3), 3) # posterior mean of ALPHA
+SIGMA_mean = squeeze(mean(SIGMA_draws, 3), 3) # posterior mean of SIGMA
+
 # # mean prediction and log predictive likelihood
 # if forecasting == 1
 #     Y_pred_mean = mean(Y_pred,1)
@@ -423,7 +424,8 @@ end # end the main Gibbs for loop
 #
 #
 # # You can also get other quantities, like impulse responses
-# if impulses==1
-#     qus = [.1, .5, .90]
-#     imp_resp = squeeze(quantile(imp,qus))
-# end
+if impulses==1
+    # qus = [.1, .5, .90]
+    # imp_resp = squeeze(quantile(imp,qus))
+    imp_resp = squeeze(mean(imp, 1), 1)
+end
