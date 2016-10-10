@@ -34,6 +34,7 @@ VAR using the Gibbs sampler, based on independent Normal Wishar prior
 
 #------------------------------LOAD DATA-----------------------------------
 include("mlag2.jl")
+include("wish.jl")
 # Load Quarterly US data on inflation, unemployment and interest rate,
 # 1953:Q1 - 2006:Q3
 Yraw = readdlm("Yraw.dat")
@@ -68,8 +69,8 @@ prior = 2   # prior = 1 --> Indepependent Normal-Whishart Prior
             # prior = 2 --> Indepependent Minnesota-Whishart Prior
 
 # Gibbs-related preliminaries
-nsave = 1          # Final number of draws to save
-nburn = 0           # Draws to discard (burn-in)
+nsave = 100          # Final number of draws to save
+nburn = 10           # Draws to discard (burn-in)
 ntot = nsave + nburn  # Total number of draws
 it_print = 2000       # Print on the screen every "it_print"-th iteration
 
@@ -175,8 +176,8 @@ SIGMA = SIGMA_OLS # This is the single draw from the posterior of SIGMA
 
 # Storage space for posterior draws
 alpha_draws = zeros(nsave, K*M)
-ALPHA_draws = zeros(nsave, K, M)
-SIGMA_draws = zeros(nsave, M, M)
+ALPHA_draws = zeros(K, M, nsave)
+SIGMA_draws = zeros(M, M, nsave)
 
 #-----------------Prior hyperparameters for bvar model
 n = K*M # Total number of parameters (size of vector alpha)
@@ -189,7 +190,8 @@ if prior == 1 # Normal-Wishart
     v_prior = M             #<---- prior Degrees of Freedom (DoF) of SIGMA
     S_prior = eye(M)        #<---- prior scale of SIGMA
     inv_S_prior = inv(S_prior)
-elseif prior == 2 # Minnesota-Whishart
+
+elseif prior == 2 # Minnesota-Wishart
     # Prior mean on VAR regression coefficients
     A_prior = [zeros(M, 1)'; 0.9*eye(M); zeros((p-1)*M, M)]  #<---- prior mean of ALPHA (parameter matrix)
     a_prior = A_prior[:]               #<---- prior mean of alpha (parameter vector)
@@ -216,8 +218,6 @@ elseif prior == 2 # Minnesota-Whishart
         sigma_sq[i, 1] = (1/(Traw-p+1))*dot((Y_i - Ylag_i*alpha_i),(Y_i - Ylag_i*alpha_i))
     end
 
-
-
     # Now define prior hyperparameters.
     # Create an array of dimensions K x M, which will contain the K diagonal
     # elements of the covariance matrix, in each of the M equations.
@@ -236,7 +236,7 @@ elseif prior == 2 # Minnesota-Whishart
                 elseif j in ind[i, :]
                     V_i[j, i] = a_bar_1/(p^2) # variance on own lags
                 else
-                    ll = 0 # need to initialize here because 'for' loop in Julia introduces new scope 
+                    ll = 0 # need to initialize here because 'for' loop in Julia introduces new scope
                     for kj=1:M
                         if j in ind[kj, :]
                             ll = kj
@@ -258,42 +258,39 @@ elseif prior == 2 # Minnesota-Whishart
             end
         end
     end
+
+    # Now V is a diagonal matrix with diagonal elements the V_i
+    V_prior = diagm(V_i[:])  # this is the prior variance of the vector alpha
+
+    # Hyperparameters on inv(SIGMA) ~ W(v_prior,inv(S_prior))
+    v_prior = M
+    S_prior = eye(M)
+    inv_S_prior = inv(S_prior)
 end
-#
-#     # Now V is a diagonal matrix with diagonal elements the V_i
-#     V_prior = diag(V_i(:))  # this is the prior variance of the vector alpha
-#
-#     # Hyperparameters on inv(SIGMA) ~ W(v_prior,inv(S_prior))
-#     v_prior = M
-#     S_prior = eye(M)
-#     inv_S_prior = inv(S_prior)
-# end
-#
-# #========================== Start Sampling ================================
-# #==========================================================================
-# tic
-# disp('Number of iterations')
-# for irep = 1:ntot  #Start the Gibbs "loop"
-#     if mod(irep,it_print) == 0
-#         disp(irep)
-#         toc
-#     end
-#
-#     VARIANCE = kron(inv(SIGMA),speye(T))
-#     V_post = inv(inv(V_prior) + Z'*VARIANCE*Z)
-#     a_post = V_post*(inv(V_prior)*a_prior + Z'*VARIANCE*Y(:))
-#     alpha = a_post + chol(V_post)'*randn(n,1) # Draw of alpha
-#
-#     ALPHA = reshape(alpha,K,M) # Draw of ALPHA
-#
-#     # Posterior of SIGMA|ALPHA,Data ~ iW(inv(S_post),v_post)
-#     v_post = T + v_prior
-#     S_post = S_prior + (Y - X*ALPHA)'*(Y - X*ALPHA)
-#     SIGMA = inv(wish(inv(S_post),v_post))# Draw SIGMA
-#
-#     # Store results
-#     if irep > nburn
-#         #=========FORECASTING:
+
+#---------------------------Start Sampling --------------------------------
+#--------------------------------------------------------------------------
+println("Number of iterations")
+for irep = 1:ntot  # Start the Gibbs "loop"
+    if irep % it_print == 0 # print iterations
+        println(irep)
+    end
+
+    VARIANCE = kron(inv(SIGMA), speye(T))
+    V_post = Symmetric(inv(inv(V_prior) + Z'*VARIANCE*Z)) # added Symmetric()
+    a_post = V_post*(inv(V_prior)*a_prior + Z'*VARIANCE*Y[:])
+    alpha = a_post + chol(V_post)'*randn(n,1) # Draw of alpha
+    ALPHA = reshape(alpha, K, M)              # Draw of ALPHA
+
+    # Posterior of SIGMA|ALPHA,Data ~ iW(inv(S_post),v_post)
+    v_post = T + v_prior
+    S_post = S_prior + (Y - X*ALPHA)'*(Y - X*ALPHA)
+#    S_post = Symmetric(S_prior + (Y - X*ALPHA)'*(Y - X*ALPHA)) # may need this instead
+    SIGMA = inv(wish(inv(S_post),v_post)) # Draw SIGMA
+
+    # Store results
+    if irep > nburn
+#         #---------FORECASTING:
 #         if forecasting==1
 #             if forecast_method == 0   # Direct forecasts
 #                 Y_temp = zeros(repfor,M)
@@ -395,16 +392,16 @@ end
 #
 #         end
 #
-#         #----- Save draws of the parameters
-#         alpha_draws(irep-nburn,:) = alpha
-#         ALPHA_draws(irep-nburn,:,:) = ALPHA
-#         SIGMA_draws(irep-nburn,:,:) = SIGMA
-#
-#     end # end saving results
-#
-# end #end the main Gibbs for loop
-# #====================== End Sampling Posteriors ===========================
-#
+        #----- Save draws of the parameters
+        alpha_draws[irep-nburn, :] = alpha
+        ALPHA_draws[:, :, irep-nburn] = ALPHA
+        SIGMA_draws[:, :, irep-nburn] = SIGMA
+
+    end # end saving results
+
+end # end the main Gibbs for loop
+#------------------- End Sampling Posteriors -----------------------------
+
 # #Posterior mean of parameters:
 # ALPHA_mean = squeeze(mean(ALPHA_draws,1)) #posterior mean of ALPHA
 # SIGMA_mean = squeeze(mean(SIGMA_draws,1)) #posterior mean of SIGMA
@@ -430,6 +427,3 @@ end
 #     qus = [.1, .5, .90]
 #     imp_resp = squeeze(quantile(imp,qus))
 # end
-#
-# clc
-# toc
